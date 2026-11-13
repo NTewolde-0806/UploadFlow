@@ -125,7 +125,7 @@ final class UploadViewModel: ObservableObject {
         await task?.value
     }
 
-    private func receiveProgress(
+    func receiveProgress(
         _ progress: Double,
         attemptID: UUID
     ) {

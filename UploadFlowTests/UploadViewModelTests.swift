@@ -1,4 +1,5 @@
 import Testing
+import Foundation
 @testable import UploadFlow
 
 @MainActor
@@ -177,5 +178,67 @@ struct UploadViewModelTests {
 
         #expect(uploadedFile == selectedFile)
         #expect(receipt.uploadID == uploadID)
+    }
+    
+    @Test
+    func progressRejectsStaleAttemptsAndRegressions() async throws {
+        let service = ControlledUploadService()
+        let viewModel = UploadViewModel(service: service)
+
+        viewModel.selectSampleFile()
+        viewModel.startUpload()
+        await service.waitUntilStarted()
+
+        guard case .uploading(let file, let attemptID, _) =
+            viewModel.state else {
+            Issue.record("Expected uploading state.")
+            return
+        }
+
+        viewModel.receiveProgress(0.6, attemptID: attemptID)
+
+        #expect(viewModel.state == .uploading(
+            file: file,
+            attemptID: attemptID,
+            progress: 0.6
+        ))
+
+        // Progress cannot move backwards.
+        viewModel.receiveProgress(0.2, attemptID: attemptID)
+
+        // A different attempt cannot update this upload.
+        viewModel.receiveProgress(0.9, attemptID: UUID())
+
+        // Non-finite values must be ignored.
+        viewModel.receiveProgress(.nan, attemptID: attemptID)
+
+        #expect(viewModel.state == .uploading(
+            file: file,
+            attemptID: attemptID,
+            progress: 0.6
+        ))
+
+        // Values above 1 are clamped; 100% is not success.
+        viewModel.receiveProgress(1.5, attemptID: attemptID)
+
+        #expect(viewModel.state == .uploading(
+            file: file,
+            attemptID: attemptID,
+            progress: 1
+        ))
+
+        viewModel.cancelUpload()
+
+        // Even a matching attempt cannot update a cancelling screen.
+        viewModel.receiveProgress(0.8, attemptID: attemptID)
+        #expect(viewModel.state == .cancelling(file))
+
+        let uploadIDs = await service.receivedUploadIDs
+        let uploadID = try #require(uploadIDs.first)
+
+        await service.succeed(uploadID: uploadID)
+        await viewModel.waitForCurrentUpload()
+
+        #expect(viewModel.state == .cancelled(file))
     }
 }
